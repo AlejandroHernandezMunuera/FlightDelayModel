@@ -4,15 +4,8 @@
   <artifactId>BigDataProject</artifactId>
   <version>1</version>
   <name>${project.artifactId}</name>
-  <description>My wonderfull scala app</description>
-  <inceptionYear>2015</inceptionYear>
-  <licenses>
-    <license>
-      <name>My License</name>
-      <url>http://....</url>
-      <distribution>repo</distribution>
-    </license>
-  </licenses>
+  <description>FlightDelayModel</description>
+  <inceptionYear>2016</inceptionYear>
 
   <properties>
     <maven.compiler.source>1.6</maven.compiler.source>

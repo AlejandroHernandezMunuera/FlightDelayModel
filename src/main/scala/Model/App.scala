@@ -1,27 +1,24 @@
 package Model
 
-import org.apache.spark.sql.{SQLContext, SparkSession}
-import org.apache.spark
+import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.functions._
-import org.apache.spark.sql.Column
-import org.apache.spark.SparkConf
-import org.apache.spark.SparkContext
-import org.apache.spark.SparkContext._
-import org.apache.log4j.{Level, Logger}
-import java.util._
-
-import org.apache.avro.generic.GenericData.StringType
 import org.apache.spark.sql.types.IntegerType
+import org.apache.log4j.{Level, Logger}
+import org.apache.spark.ml.feature.{OneHotEncoder, StringIndexer}
+import org.apache.spark.ml.regression.LinearRegression
+import org.apache.spark.ml.feature.VectorAssembler
+import org.apache.spark.ml.Pipeline
+import org.apache.spark.ml.evaluation.RegressionEvaluator
 
 import scala.collection.mutable
 /**
- * @author ${user.name}
+ * @author ${Alejandro Hernandez, Daan Knoors}
  */
 object App {
 
   val getConcatenated = udf( ( first: String, second: String, third: String ) =>
   {
-    first + "-" + second + "-" + third + ":"
+    first + "-" + second + "-" + third
   } )
 
   val isLeap = udf( ( year: Int ) =>
@@ -34,55 +31,69 @@ object App {
   val dayOfYear = udf ( ( isLeap: Boolean, numberMonth: Int, day: Int ) =>
   {
     if( isLeap && numberMonth > 2 )
-      (dayCount( numberMonth ) + day + 1).toDouble
+      dayCount( numberMonth ) + day + 1
     else
-      (dayCount( numberMonth ) + day).toDouble
+      dayCount( numberMonth ) + day
   } )
 
-  val weekOfYear = udf ( ( dayOfYear: Double) =>
+  val weekOfYear = udf ( ( dayOfYear: Int) =>
   {
-    (dayOfYear/7).toInt.toDouble
+    dayOfYear/7
+  } )
+
+  val weekOfMonth = udf ( ( dayOfMonth: Int) =>
+  {
+    if( dayOfMonth <= 7 )
+      1
+    else if( dayOfMonth <= 14 )
+      2
+    else if( dayOfMonth <= 21)
+      3
+    else
+      4
   } )
 
   val minuteOfDay = udf ( ( hhmm: Int ) =>
   {
     val aux = hhmm.toString
     if( aux.length == 4 )
-      aux.slice( 0, 2 ).toDouble * 60 + aux.slice( 2, 4 ).toDouble
+      aux.slice( 0, 2 ).toInt * 60 + aux.slice( 2, 4 ).toInt
     else if( aux.length == 3 )
-      aux.slice( 0, 1 ).toDouble * 60 + aux.slice( 1, 3 ).toDouble
+      aux.slice( 0, 1 ).toInt * 60 + aux.slice( 1, 3 ).toInt
     else
-      aux.toDouble
+      aux.toInt
   } )
 
   val roundHour = udf ( ( hhmm: Int ) =>
   {
     val aux = hhmm.toString
     if( aux.length == 1 || ( aux.length == 2 && aux.toInt < 30 ) )
-      0.toDouble
+      0
     else if( aux.length == 2 && aux.toInt >= 30 )
-      1.toDouble
+      1
     else if( aux.length == 3  )
       if( aux.slice( 1, 3 ).toInt >= 30 )
-        aux.slice( 0, 1 ).toDouble + 1
+        aux.slice( 0, 1 ).toInt + 1
       else
-        aux.slice( 0, 1 ).toDouble
+        aux.slice( 0, 1 ).toInt
     else if(  aux.slice( 2, 4 ).toInt >= 30 )
-      aux.slice( 0, 2 ).toDouble + 1
+      aux.slice( 0, 2 ).toInt + 1
     else
-      aux.slice( 0, 2 ).toDouble
+      aux.slice( 0, 2 ).toInt
   } )
 
   val toStringAux = udf[ String, Int ]( _.toString )
 
-  def main( args : Array[ String ] )
-  {
-    //if(args.length!=1)
-      //throw new Exception("Not correct number of arguments")
+  def main( args : Array[ String ] ) {
+
     Logger.getLogger( "org" ).setLevel( Level.OFF )
     Logger.getLogger( "akka" ).setLevel( Level.OFF )
 
+    //if(args.length!=1)
+      //throw new Exception("Not correct number of arguments")
+
     val spark = SparkSession.builder().appName( "test" ).config( "spark.master", "local" ).getOrCreate()
+    //val spark = SparkSession.builder().enableHiveSupport().appName( "test" ).getOrCreate()
 
     val flights = spark
       .read
@@ -90,63 +101,39 @@ object App {
       .option( "header", "true" )
       .option( "inferSchema", "true" )
       //.load( args(0) )
-      .load( "/Users/alejandrohernandezmunuera/Documents/Master/UPM/1ºSemester/Big data/2008_80k.csv" )
-      .withColumn("Year", column("Year").cast("double"))
-      .withColumn("DayOfWeek", column("DayOfWeek").cast("double"))
-      .withColumn("DepTime", column("DepTime").cast("double"))
+      .load( "/Users/alejandrohernandezmunuera/Documents/Master/UPM/1ºSemestre/Big data/2008_80k.csv" )
+      .withColumn("DepTime", column("DepTime").cast(IntegerType))
       .withColumn("CRSElapsedTime", column("CRSElapsedTime").cast("double"))
       .withColumn("ArrDelay", column("ArrDelay").cast("double"))
       .withColumn("DepDelay", column("DepDelay").cast("double"))
       .withColumn("TaxiOut", column("TaxiOut").cast("double"))
       .withColumn("Distance", column("Distance").cast("double"))
-      .withColumn("FlightNum", toStringAux(column("FlightNum")))
-
       .where( col( "Cancelled" ) === 0)
       .where( col( "DepTime" ).isNotNull )
       .where( col( "CRSElapsedTime" ).isNotNull )
       .where( col( "ArrDelay" ).isNotNull )
       .where( col( "DepDelay" ).isNotNull )
       .where( col( "Distance" ).isNotNull )
-
       .drop( "Cancelled", "CancellationCode", "ArrTime", "ActualElapsedTime", "AirTime", "TaxiIn", "Diverted",
-        "CarrierDelay", "WeatherDelay", "NASDelay", "SecurityDelay", "LateAircraftDelay" )
-
+        "CarrierDelay", "WeatherDelay", "NASDelay", "SecurityDelay", "LateAircraftDelay", "TailNum" )
       .withColumn("IsLeapYear", isLeap( col("Year") ) )
       .withColumn( "DayOfYear", dayOfYear(col("isLeapYear"),col("Month"),col("DayofMonth")) )
-      .withColumn("WeekOfYear",weekOfYear(col("DayOfYear")))
-      .drop("IsLeapYear","Month","DayOfMonth")
-
-      //.withColumn("DepTimeMinOfDay",minuteOfDay(col("DepTime")))
+      .withColumn("WeekOfYear", weekOfYear(col("DayOfYear")))
+      .withColumn("WeekOfMonth", weekOfMonth(col("DayofMonth")))
       .withColumn("DepTimeHour",roundHour(col("DepTime")))
-
-      //.withColumn("CRSDepTimeMinOfDay",minuteOfDay(col("CRSDepTime")))
-      //.withColumn("CRSDepTimeHour",roundHour(col("CRSDepTime")))
-
-      //.withColumn("CRSArrTimeMinOfDay",minuteOfDay(col("CRSArrTime")))
       .withColumn("CRSArrTimeHour",roundHour(col("CRSArrTime")))
-
-      .drop("DepTime","CRSDepTime","CRSArrTime")
-
       .withColumn("CRSSpeed",col("Distance")/col("CRSElapsedTime"))
       .withColumn( "DateString", getConcatenated( col( "DayOfYear" ), col( "Year" ), toStringAux(column("CRSArrTimeHour")) ))
 
-
-
     val numberFlights = flights.groupBy( "Dest", "DateString" ).count().withColumnRenamed("count","NumberOfFlightsLandingSameDestTime")
-
 
     var finalDF = flights.join(numberFlights,flights("Dest") === numberFlights("Dest") &&
       flights("DateString") === numberFlights("DateString") , "left_outer").drop(numberFlights("Dest"))
       .drop(numberFlights("DateString"))
-      .drop("DateString")
-
-    import org.apache.spark.ml.feature.{OneHotEncoder, StringIndexer}
-
-    finalDF.printSchema()
-    finalDF.show()
 
     val aux = finalDF.where( col( "TaxiOut" ).isNotNull)
-    val input = mutable.MutableList[String]("CRSElapsedTime", "DepDelay", "Distance", "CRSSpeed",
+
+    val input = mutable.MutableList[String]("CRSElapsedTime","DepDelay", "CRSSpeed",
       "NumberOfFlightsLandingSameDestTime")
 
     if( aux.count != 0 && aux.count / finalDF.count > 0.7 )
@@ -154,19 +141,13 @@ object App {
         finalDF = aux
         input += "TaxiOut"
       }
-    else
-      {
-        finalDF = finalDF.drop("TaxiOut")
-      }
 
-    val columnNames = Array( "UniqueCarrier", "FlightNum", "TailNum","Origin", "Dest",
-      "Year","DayOfWeek","DayOfYear", "WeekOfYear", "CRSArrTimeHour", "DepTimeHour"  )
-
-
+    val columnNames = Array( "Year", "DayOfWeek", "UniqueCarrier","Origin", "Dest",
+      "WeekOfMonth", "CRSArrTimeHour","DepTimeHour"  )
 
     for(name<-columnNames)
     {
-      if( finalDF.groupBy( name ).count().count()>1)
+      if( finalDF.select(name).distinct().count()>1)
         {
           finalDF = new StringIndexer()
             .setInputCol(name)
@@ -177,23 +158,8 @@ object App {
             .setOutputCol(name+"Vector")
             .transform(finalDF)
           input += name+"Vector"
-          finalDF = finalDF.drop(name)
-          finalDF = finalDF.drop(name+"Index")
         }
-      else
-        finalDF = finalDF.drop(name)
-
     }
-
-
-
-    finalDF.printSchema()
-    finalDF.show()
-    println(input)
-    import org.apache.spark.ml.regression.LinearRegression
-    import org.apache.spark.ml.feature.VectorAssembler
-    import org.apache.spark.ml.Pipeline
-
 
     val split = finalDF.randomSplit(Array(0.7,0.3))
     val training = split(0)
@@ -202,7 +168,6 @@ object App {
     val assembler = new VectorAssembler()
       .setInputCols(input.toArray)
       .setOutputCol("ArrDelayNew")
-
 
     val lr = new LinearRegression()
       .setFeaturesCol("ArrDelayNew")
@@ -214,10 +179,9 @@ object App {
       .setStages(Array(assembler, lr))
 
     val lrModel = pipeline.fit(training)
-    lrModel.transform(test).show
 
-    import org.apache.spark.ml.evaluation.RegressionEvaluator
     val predictions = lrModel.transform(test)
+
     val eval_r1 = new RegressionEvaluator()
       .setLabelCol("ArrDelay")
       .setMetricName("r2")
@@ -226,13 +190,12 @@ object App {
       .setLabelCol("ArrDelay")
       .setMetricName("rmse")
 
-
     val r2 = eval_r1.evaluate(predictions)
+
     val rmse = eval_r2.evaluate(predictions)
+
     println("R-squared: " + r2)
     println("rmse: "+ rmse)
 
-
   }
-
 }
